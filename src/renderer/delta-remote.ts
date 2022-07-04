@@ -282,7 +282,7 @@ class DeltaRemote {
   call(
     fnName: 'messageList.getFirstUnreadMessage',
     chatId: number
-  ): Promise<number>
+  ): Promise<{firstUnreadMessageId: number, countUnreadMessages: number}>
   call(
     fnName: 'messageList.searchMessages',
     query: string,

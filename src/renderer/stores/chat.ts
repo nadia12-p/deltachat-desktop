@@ -56,6 +56,9 @@ export interface ChatStoreState {
   scrollToBottomIfClose: boolean
   lastKnownScrollHeight: number
   countFetchedMessages: number
+  firstUnreadMessageId: number,
+  countUnreadMessages: number
+  jumpToMessageStack: number[]
 }
 
 const defaultState: ChatStoreState = {
@@ -70,6 +73,9 @@ const defaultState: ChatStoreState = {
   scrollToBottomIfClose: false,
   lastKnownScrollHeight: -1,
   countFetchedMessages: 0,
+  firstUnreadMessageId: -1,
+  countUnreadMessages: 0,
+  jumpToMessageStack: []
 }
 
 function getLastKnownScrollPosition(): {
@@ -686,7 +692,7 @@ class ChatStore extends Store<ChatStoreState> {
             await DeltaBackend.call('messageList.getMessageIds', chatId)
           )
 
-          const firstUnreadMessageId = await DeltaBackend.call(
+          const {firstUnreadMessageId, countUnreadMessages} = await DeltaBackend.call(
             'messageList.getFirstUnreadMessage',
             chatId
           )
@@ -734,6 +740,9 @@ class ChatStore extends Store<ChatStoreState> {
             oldestFetchedMessageIndex,
             newestFetchedMessageIndex,
             scrollToBottom: true,
+            countUnreadMessages,
+            firstUnreadMessageId: firstUnreadMessageId,
+            jumpToMessageStack: []
           })
           ActionEmitter.emitAction(
             chat.archived
@@ -753,15 +762,40 @@ class ChatStore extends Store<ChatStoreState> {
     jumpToMessage: this.queuedEffect(
       this.lockedEffect(
         'scroll',
-        async (msgId: number, highlight?: boolean) => {
+        async (msgId: number | undefined, highlight?: boolean, popJumpToMessageStack?: boolean) => {
           log.debug('jumpToMessage with messageId: ', msgId)
           highlight = highlight === false ? false : true
           // these methods were called in backend before
           // might be an issue if DeltaBackend.call has a significant delay
-          const _message = await DeltaBackend.call('messageList.getMessages', [
-            msgId,
-          ])
+          let _message: [number, MessageType | null][] = []
+          let jumpToMessageStack: number[] = []
+          let jumpToMessageId = -1
+          if (popJumpToMessageStack === true) {
+            let [_jumpToMessageStack, _jumpToMessageId]: [number[], number] = chatStore.state.jumpToMessageStack.length === 0 ?
+              [[], chatStore.state.messageIds[chatStore.state.messageIds.length - 1]] :
+              [
+                chatStore.state.jumpToMessageStack.slice(0, chatStore.state.jumpToMessageStack.length - 2),
+                chatStore.state.jumpToMessageStack[chatStore.state.jumpToMessageStack.length - 1]
+              ]
+            _message = await DeltaBackend.call('messageList.getMessages', [jumpToMessageId])
+            jumpToMessageStack = _jumpToMessageStack
+            jumpToMessageId = _jumpToMessageId
+          } else {
+            msgId = msgId as number
 
+            _message = await DeltaBackend.call('messageList.getMessages', [
+              msgId,
+            ])
+            const chatId = (_message[0][1] as MessageType)?.chatId
+
+            jumpToMessageStack = chatId === chatStore.state.chat?.id ?
+              [...chatStore.state.jumpToMessageStack, jumpToMessageId] :
+              []
+
+            jumpToMessageId = msgId
+          }
+
+          //@ts-ignore
           if (_message.length === 0) {
             throw new Error(
               'jumpToMessage: Tried to jump to non existing message with id: ' +
@@ -786,7 +820,7 @@ class ChatStore extends Store<ChatStoreState> {
             await DeltaBackend.call('messageList.getMessageIds', chatId)
           )
 
-          const jumpToMessageIndex = messageIds.indexOf(msgId)
+          const jumpToMessageIndex = messageIds.indexOf(jumpToMessageId)
 
           let oldestFetchedMessageIndex = -1
           let newestFetchedMessageIndex = -1
@@ -833,6 +867,8 @@ class ChatStore extends Store<ChatStoreState> {
             )
           }
 
+          const { firstUnreadMessageId, countUnreadMessages } = await DeltaBackend.call('messageList.getFirstUnreadMessage', chatId)
+
           this.reducer.selectedChat({
             chat,
             messagePages: [messagePage],
@@ -841,9 +877,12 @@ class ChatStore extends Store<ChatStoreState> {
             newestFetchedMessageIndex,
             scrollTo: {
               type: 'scrollToMessage',
-              msgId,
+              msgId: jumpToMessageId,
               highlight,
             },
+            countUnreadMessages,
+            firstUnreadMessageId,
+            jumpToMessageStack
           })
           ActionEmitter.emitAction(
             chat.archived
